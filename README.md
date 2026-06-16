@@ -10,8 +10,10 @@
 If Traefik is behind a Cloudflare Proxy/Tunnel, it won't be able to get the real IP from the external client as well as other information.
 
 This plugin solves this issue by overwriting the X-Real-IP and X-Forwarded-For with an IP from the CF-Connecting-IP header.  
-The real IP will be the Cf-Connecting-IP if request is come from cloudflare ( truest ip in configuration file).  
+The real IP will be the Cf-Connecting-IP if the request comes from Cloudflare or another trusted IP in the configuration file.  
 The plugin also writes the CF-Visitor scheme to the X-Forwarded-Proto. (This fixes an infinite redirect issue for wordpress when using CF[443]->PROXY/TUNNEL->Traefik[80]->WP[80])
+
+When a trusted request does not include any Cloudflare-specific headers, the plugin treats it as direct/local traffic. In that case it sets X-Real-IP from the direct remote address but does not overwrite X-Forwarded-For. This avoids producing malformed forwarded chains such as `, 172.18.0.1` for local split-DNS, Docker network, Tailscale, or other non-Cloudflare paths.
 
 ## Configuration
 
@@ -30,6 +32,16 @@ One thing included in this plugin is we bundle the CloudFlare server IPs with it
 However on the flip-side, if you want to, you can just disable them by setting `disableDefault` to `true`.
 
 If you do not define `trustip` and `disableDefault`, it doesn't seem to load the plugin, so just set `disableDefault` to `false` and you are able to use the default IP list.
+
+### Notes re local or split-DNS traffic
+
+If the same Traefik entrypoint handles both Cloudflare traffic and direct local traffic, add your local proxy or container network to `trustip`. The plugin now distinguishes trusted Cloudflare traffic from trusted local traffic by checking whether Cloudflare-specific headers are present.
+
+- Trusted request with `Cf-Connecting-Ip` or `Cf-Visitor`: Cloudflare mode. `X-Forwarded-For` and `X-Real-Ip` are set from `Cf-Connecting-Ip`.
+- Trusted request without Cloudflare headers: direct/local mode. `X-Real-Ip` is set from the direct remote address, and `X-Forwarded-For` is preserved.
+- Untrusted request: Cloudflare headers are removed and `X-Real-Ip` is set from the direct remote address.
+
+This makes the middleware safe to attach globally to an entrypoint that serves Cloudflare Tunnel, local LAN, Docker, or Tailscale clients.
 
 ### Enable the plugin
 
