@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	xRealIP        = "X-Real-Ip"
+	xRealIP        = "X-Real-Ip"       // unused but we'll still keep? We'll use it later.
 	xCfTrusted     = "X-Is-Trusted"
 	xForwardFor    = "X-Forwarded-For"
 	xForwardProto  = "X-Forwarded-Proto"
-	cfConnectingIP = "CF-Connecting-IP"
-	cfVisitor      = "CF-Visitor"
+	cfConnectingIP = "Cf-Connecting-Ip"   // Canonical: "Cf-Connecting-Ip"
+	cfVisitor      = "Cf-Visitor"         // Canonical: "Cf-Visitor"
 )
 
 // Config the plugin configuration.
@@ -87,24 +87,23 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 // Helper to optionally extract real IP from Cloudflare headers.
 // Returns true if Cloudflare headers were present and valid, false otherwise.
 func (r *RealIPOverWriter) trySetCFHeaders(req *http.Request) bool {
-	if req.Header.Get("Cf-Visitor") == "" {
+	if req.Header.Get(cfVisitor) == "" {
 		return false
 	}
 	var visitor CFVisitorHeader
-	if err := json.Unmarshal([]byte(req.Header.Get("Cf-Visitor")), &visitor); err != nil {
-		// Malformed Cloudflare header – treat as untrusted
-		req.Header.Set("X-Is-Trusted", "danger")
-		req.Header.Del("Cf-Visitor")
-		req.Header.Del("Cf-Connecting-Ip")
+	if err := json.Unmarshal([]byte(req.Header.Get(cfVisitor)), &visitor); err != nil {
+		req.Header.Set(xCfTrusted, "danger")
+		req.Header.Del(cfVisitor)
+		req.Header.Del(cfConnectingIP)
 		return false
 	}
-	req.Header.Set("X-Forwarded-Proto", visitor.Scheme)
-	cfIP := req.Header.Get("Cf-Connecting-Ip")
+	req.Header.Set(xForwardProto, visitor.Scheme)
+	cfIP := req.Header.Get(cfConnectingIP)
 	if cfIP != "" {
-		req.Header.Set("X-Forwarded-For", cfIP)
-		req.Header.Set("X-Real-Ip", cfIP)
+		req.Header.Set(xForwardFor, cfIP)
+		req.Header.Set(xRealIP, cfIP)
 	}
-	req.Header.Set("X-Is-Trusted", "yes")
+	req.Header.Set(xCfTrusted, "yes")
 	return true
 }
 
@@ -123,14 +122,12 @@ func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	if trustResult.trusted && r.trySetCFHeaders(req) {
-		// Cloudflare handling done; nothing more needed
-	} else {
-		// Not trusted or no Cloudflare headers
-		req.Header.Set("X-Is-Trusted", "no")
-		req.Header.Set("X-Real-Ip", trustResult.directIP)
-		req.Header.Del("Cf-Visitor")
-		req.Header.Del("Cf-Connecting-Ip")
+	// If NOT (trusted AND valid Cloudflare headers), treat as untrusted
+	if !(trustResult.trusted && r.trySetCFHeaders(req)) {
+		req.Header.Set(xCfTrusted, "no")
+		req.Header.Set(xRealIP, trustResult.directIP)
+		req.Header.Del(cfVisitor)
+		req.Header.Del(cfConnectingIP)
 	}
 	r.next.ServeHTTP(rw, req)
 }
