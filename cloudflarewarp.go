@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	xRealIP        = "X-Real-Ip"       // unused but we'll still keep? We'll use it later.
+	xRealIP        = "X-Real-Ip"
 	xCfTrusted     = "X-Is-Trusted"
 	xForwardFor    = "X-Forwarded-For"
 	xForwardProto  = "X-Forwarded-Proto"
-	cfConnectingIP = "Cf-Connecting-Ip"   // Canonical: "Cf-Connecting-Ip"
-	cfVisitor      = "Cf-Visitor"         // Canonical: "Cf-Visitor"
+	cfConnectingIP = "Cf-Connecting-Ip"
+	cfVisitor      = "Cf-Visitor"
 )
 
 // Config the plugin configuration.
@@ -54,7 +54,7 @@ type CFVisitorHeader struct {
 }
 
 // New created a new plugin.
-func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	ipOverWriter := &RealIPOverWriter{
 		next: next,
 		name: name,
@@ -84,27 +84,41 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	return ipOverWriter, nil
 }
-// Helper to optionally extract real IP from Cloudflare headers.
-// Returns true if Cloudflare headers were present and valid, false otherwise.
-func (r *RealIPOverWriter) trySetCFHeaders(req *http.Request) bool {
-	if req.Header.Get(cfVisitor) == "" {
-		return false
+
+// hasCloudflareHeaders reports whether Cloudflare-specific headers are present,
+// even when their values are blank.
+func hasCloudflareHeaders(req *http.Request) bool {
+	_, hasCFVisitor := req.Header[cfVisitor]
+	_, hasCFConnecting := req.Header[cfConnectingIP]
+
+	return hasCFVisitor || hasCFConnecting
+}
+
+func setCloudflareHeaders(req *http.Request) bool {
+	cfVisitorValue := req.Header.Get(cfVisitor)
+	if cfVisitorValue != "" {
+		var visitor CFVisitorHeader
+		if err := json.Unmarshal([]byte(cfVisitorValue), &visitor); err != nil {
+			req.Header.Set(xCfTrusted, "danger")
+			req.Header.Del(cfVisitor)
+			req.Header.Del(cfConnectingIP)
+			return false
+		}
+		req.Header.Set(xForwardProto, visitor.Scheme)
 	}
-	var visitor CFVisitorHeader
-	if err := json.Unmarshal([]byte(req.Header.Get(cfVisitor)), &visitor); err != nil {
-		req.Header.Set(xCfTrusted, "danger")
-		req.Header.Del(cfVisitor)
-		req.Header.Del(cfConnectingIP)
-		return false
-	}
-	req.Header.Set(xForwardProto, visitor.Scheme)
-	cfIP := req.Header.Get(cfConnectingIP)
-	if cfIP != "" {
-		req.Header.Set(xForwardFor, cfIP)
-		req.Header.Set(xRealIP, cfIP)
-	}
+
 	req.Header.Set(xCfTrusted, "yes")
+	req.Header.Set(xForwardFor, req.Header.Get(cfConnectingIP))
+	req.Header.Set(xRealIP, req.Header.Get(cfConnectingIP))
+
 	return true
+}
+
+func setDirectHeaders(req *http.Request, directIP string) {
+	req.Header.Set(xCfTrusted, "no")
+	req.Header.Set(xRealIP, directIP)
+	req.Header.Del(cfVisitor)
+	req.Header.Del(cfConnectingIP)
 }
 
 func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -122,13 +136,15 @@ func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	// If NOT (trusted AND valid Cloudflare headers), treat as untrusted
-	if !(trustResult.trusted && r.trySetCFHeaders(req)) {
-		req.Header.Set(xCfTrusted, "no")
-		req.Header.Set(xRealIP, trustResult.directIP)
-		req.Header.Del(cfVisitor)
-		req.Header.Del(cfConnectingIP)
+	if trustResult.trusted && hasCloudflareHeaders(req) {
+		if !setCloudflareHeaders(req) {
+			r.next.ServeHTTP(rw, req)
+			return
+		}
+	} else {
+		setDirectHeaders(req, trustResult.directIP)
 	}
+
 	r.next.ServeHTTP(rw, req)
 }
 

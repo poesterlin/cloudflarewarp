@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	plugin "github.com/BetterCorp/cloudflarewarp"
@@ -15,7 +14,7 @@ func TestNew(t *testing.T) {
 	cfg.TrustIP = []string{"103.21.244.0/22", "172.18.0.1/32", "2405:b500::/32"}
 
 	ctx := context.Background()
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
+	next := http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {})
 	handler, err := plugin.New(ctx, next, cfg, "cloudflarewarp")
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +126,6 @@ func TestNew(t *testing.T) {
 		},
 	}
 	for _, test := range testCases {
-		test := test
 		t.Run(test.desc, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 
@@ -141,7 +139,7 @@ func TestNew(t *testing.T) {
 				req.RemoteAddr = test.remote + ":36001"
 			}
 			req.Header.Set("X-Real-Ip", test.remote)
-			req.Header.Set("Cf-Connecting-IP", test.cfConnectingIP)
+			req.Header.Set("Cf-Connecting-Ip", test.cfConnectingIP)
 			req.Header.Set("Cf-Visitor", test.cfVisitor)
 
 			handler.ServeHTTP(recorder, req)
@@ -152,7 +150,7 @@ func TestNew(t *testing.T) {
 				}
 			}
 			if recorder.Result().StatusCode != http.StatusOK {
-				t.Errorf("invalid response: " + strconv.Itoa(recorder.Result().StatusCode))
+				t.Errorf("invalid response: %d", recorder.Result().StatusCode)
 				return
 			}
 
@@ -169,12 +167,38 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestTrustedRequestWithoutCloudflareHeadersPreservesForwardedFor(t *testing.T) {
+	cfg := plugin.CreateConfig()
+	cfg.TrustIP = []string{"172.18.0.1/32"}
+	cfg.DisableDefaultCFIPs = true
+
+	ctx := context.Background()
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
+	handler, err := plugin.New(ctx, next, cfg, "cloudflarewarp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.RemoteAddr = "172.18.0.1:36001"
+	req.Header.Set("X-Forwarded-For", "172.18.0.1")
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	assertHeader(t, req, "X-Is-Trusted", "no")
+	assertHeader(t, req, "X-Real-Ip", "172.18.0.1")
+	assertHeader(t, req, "X-Forwarded-For", "172.18.0.1")
+}
+
 func TestError(t *testing.T) {
 	cfg := plugin.CreateConfig()
 	cfg.TrustIP = []string{"103.21.244.0"}
 
 	ctx := context.Background()
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
+	next := http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {})
 	_, err := plugin.New(ctx, next, cfg, "cloudflarewarp")
 	if err == nil {
 		t.Fatalf("expected error, got none")
