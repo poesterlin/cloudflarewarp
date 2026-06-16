@@ -99,11 +99,6 @@ func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		http.Error(rw, "Unknown source", http.StatusUnprocessableEntity)
 		return
 	}
-	if req.Header.Get(cfConnectingIP) == "" && trustResult.trusted {
-		req.Header.Set(xCfTrusted, "yes")
-		r.next.ServeHTTP(rw, req)
-		return
-	}
 	if trustResult.trusted {
 		if req.Header.Get(cfVisitor) != "" {
 			var cfVisitorValue CFVisitorHeader
@@ -117,8 +112,22 @@ func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 			req.Header.Set(xForwardProto, cfVisitorValue.Scheme)
 		}
 		req.Header.Set(xCfTrusted, "yes")
-		req.Header.Set(xForwardFor, req.Header.Get(cfConnectingIP))
-		req.Header.Set(xRealIP, req.Header.Get(cfConnectingIP))
+		
+		// --- PATCH START ---
+		cfIP := req.Header.Get(cfConnectingIP)
+		if cfIP != "" {
+			// Cloudflare forwarded a real client IP – use it
+			req.Header.Set(xForwardFor, cfIP)
+			req.Header.Set(xRealIP, cfIP)
+		} else {
+			// No Cloudflare header – fall back to the direct IP (or leave existing X-Forwarded-For untouched)
+			req.Header.Set(xRealIP, trustResult.directIP)
+			// Optionally set X-Forwarded-For to the direct IP if you want a valid value:
+			// req.Header.Set(xForwardFor, trustResult.directIP)
+			// Or better: do nothing and let Traefik’s normal X-Forwarded-For logic handle it.
+		}
+		// --- PATCH END ---
+		
 	} else {
 		req.Header.Set(xCfTrusted, "no")
 		req.Header.Set(xRealIP, trustResult.directIP)
