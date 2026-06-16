@@ -84,6 +84,29 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	return ipOverWriter, nil
 }
+// Helper to optionally extract real IP from Cloudflare headers.
+// Returns true if Cloudflare headers were present and valid, false otherwise.
+func (r *RealIPOverWriter) trySetCFHeaders(req *http.Request) bool {
+	if req.Header.Get("Cf-Visitor") == "" {
+		return false
+	}
+	var visitor CFVisitorHeader
+	if err := json.Unmarshal([]byte(req.Header.Get("Cf-Visitor")), &visitor); err != nil {
+		// Malformed Cloudflare header – treat as untrusted
+		req.Header.Set("X-Is-Trusted", "danger")
+		req.Header.Del("Cf-Visitor")
+		req.Header.Del("Cf-Connecting-Ip")
+		return false
+	}
+	req.Header.Set("X-Forwarded-Proto", visitor.Scheme)
+	cfIP := req.Header.Get("Cf-Connecting-Ip")
+	if cfIP != "" {
+		req.Header.Set("X-Forwarded-For", cfIP)
+		req.Header.Set("X-Real-Ip", cfIP)
+	}
+	req.Header.Set("X-Is-Trusted", "yes")
+	return true
+}
 
 func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	trustResult := r.trust(req.RemoteAddr)
@@ -99,40 +122,15 @@ func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		http.Error(rw, "Unknown source", http.StatusUnprocessableEntity)
 		return
 	}
-	if trustResult.trusted {
-		if req.Header.Get(cfVisitor) != "" {
-			var cfVisitorValue CFVisitorHeader
-			if err := json.Unmarshal([]byte(req.Header.Get(cfVisitor)), &cfVisitorValue); err != nil {
-				req.Header.Set(xCfTrusted, "danger")
-				req.Header.Del(cfVisitor)
-				req.Header.Del(cfConnectingIP)
-				r.next.ServeHTTP(rw, req)
-				return
-			}
-			req.Header.Set(xForwardProto, cfVisitorValue.Scheme)
-		}
-		req.Header.Set(xCfTrusted, "yes")
-		
-		// --- PATCH START ---
-		cfIP := req.Header.Get(cfConnectingIP)
-		if cfIP != "" {
-			// Cloudflare forwarded a real client IP – use it
-			req.Header.Set(xForwardFor, cfIP)
-			req.Header.Set(xRealIP, cfIP)
-		} else {
-			// No Cloudflare header – fall back to the direct IP (or leave existing X-Forwarded-For untouched)
-			req.Header.Set(xRealIP, trustResult.directIP)
-			// Optionally set X-Forwarded-For to the direct IP if you want a valid value:
-			// req.Header.Set(xForwardFor, trustResult.directIP)
-			// Or better: do nothing and let Traefik’s normal X-Forwarded-For logic handle it.
-		}
-		// --- PATCH END ---
-		
+
+	if trustResult.trusted && r.trySetCFHeaders(req) {
+		// Cloudflare handling done; nothing more needed
 	} else {
-		req.Header.Set(xCfTrusted, "no")
-		req.Header.Set(xRealIP, trustResult.directIP)
-		req.Header.Del(cfVisitor)
-		req.Header.Del(cfConnectingIP)
+		// Not trusted or no Cloudflare headers
+		req.Header.Set("X-Is-Trusted", "no")
+		req.Header.Set("X-Real-Ip", trustResult.directIP)
+		req.Header.Del("Cf-Visitor")
+		req.Header.Del("Cf-Connecting-Ip")
 	}
 	r.next.ServeHTTP(rw, req)
 }
