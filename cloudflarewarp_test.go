@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	plugin "github.com/BetterCorp/cloudflarewarp"
+	plugin "github.com/poesterlin/cloudflarewarp"
 )
 
 func TestNew(t *testing.T) {

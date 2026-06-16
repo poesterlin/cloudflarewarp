@@ -1,4 +1,4 @@
-module github.com/BetterCorp/cloudflarewarp
+module github.com/poesterlin/cloudflarewarp
 
 go 1.23.0
 
